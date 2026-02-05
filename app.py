@@ -88,17 +88,9 @@ def get_igcse_subject_name(subject_code):
     return "Code not found"
 
 
-def fetch_past_papers(subject_code, year_range=None):
-    # year_range is start_year-end_year, e.g. "2018-2023"
-    years = None
-    if year_range:
-        parts = [p.strip() for p in year_range.split("-")]
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            start_year = int(parts[0])
-            end_year = int(parts[1])
-            if start_year > end_year:
-                start_year, end_year = end_year, start_year
-            years = {str(y) for y in range(start_year, end_year + 1)}
+def fetch_past_papers(subject_code, range=None):
+    #range is start_year-end_year, e.g. "2018-2023"
+    range = range.split("-") if range else None
     subject_name = get_igcse_subject_name(subject_code)
     if subject_name == "Code not found":
         return []
@@ -110,9 +102,9 @@ def fetch_past_papers(subject_code, year_range=None):
         return []
     ugly_soup = BeautifulSoup(response.content, "html.parser")
     ugly_soup.prettify()#Not so ugly now :D
-    if years:
+    if range:
         papers = ugly_soup.find_all("a", class_="kt-widget4__title kt-nav__link-text cursor colorgrey stylefont fonthover")
-        papers = [p for p in papers if p.text.strip() and any(year in p.text for year in years)]
+        papers = [p for p in papers if p.text.strip() and any(year in p.text for year in range)]
     else:    
         papers = ugly_soup.find_all("a", class_="kt-widget4__title kt-nav__link-text cursor colorgrey stylefont fonthover")
     paper_urls = [urljoin(base_url, paper.get("href", "")) for paper in papers]
@@ -338,22 +330,30 @@ def _clean_sample_text(text):
             continue
         if stripped.startswith("©UCLES"):
             continue
+        # Drop literal escape artifacts
+        line = line.replace("\\n", "\n")
+        line = re.sub(r"\\+1\b", "", line)
+        line = re.sub(r"\b\\1\b", "", line)
+        line = re.sub(r"\\\d+\s+\\\d+", "", line)
         # Drop obvious CID artifact lines
-        if re.fullmatch(r"\\(cid:\\d+\\)+", stripped):
+        if re.fullmatch(r"\(cid:\d+\)+", stripped):
             continue
         # Fix common OCR spacing issues
-        line = re.sub(r"\\$(\\d)", r"$ \\1", line)
-        line = re.sub(r"([A-Za-z])\\$(\\d)", r"\\1 $\\2", line)
-        line = re.sub(r"(\\d)([A-Za-z])", r"\\1 \\2", line)
-        line = re.sub(r"([A-Za-z])([0-9])", r"\\1 \\2", line)
+        line = re.sub(r"\$(\d)", r"$ \1", line)
+        line = re.sub(r"([A-Za-z])\$(\d)", r"\1 $\2", line)
+        line = re.sub(r"(\d)([A-Za-z])", r"\1 \2", line)
+        line = re.sub(r"([A-Za-z])([0-9])", r"\1 \2", line)
         # Normalize table separators
         if "|" in line:
-            line = re.sub(r"\\s*\\|\\s*", " | ", line)
-            line = re.sub(r"\\s{2,}", " ", line)
+            # Drop large empty table grids
+            if re.fullmatch(r"(\s*\|\s*){6,}\s*", line):
+                continue
+            line = re.sub(r"\s*\|\s*", " | ", line)
+            line = re.sub(r"\s{2,}", " ", line)
         cleaned_lines.append(line)
     # Collapse excessive blank lines
-    text = "\\n".join(cleaned_lines)
-    text = re.sub(r"\\n{3,}", "\\n\\n", text)
+    text = "\n".join(cleaned_lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -361,15 +361,14 @@ def generate_sample_paper(paper):
     sample_lines = []
     seen = set()
     for section in paper:
-        sample_lines.append(f"--- {section['section']} ---\\n")
+        sample_lines.append(f"--- {section['section']} ---\n")
         for question in section["questions"]:
-            # De-duplicate identical questions
-            normalized = re.sub(r"\\s+", " ", question).strip().lower()
+            normalized = re.sub(r"\s+", " ", question).strip().lower()
             if normalized in seen:
                 continue
             seen.add(normalized)
-            sample_lines.append(question + "\\n\\n")
-    raw = "\\n".join(sample_lines)
+            sample_lines.append(question + "\n\n")
+    raw = "\n".join(sample_lines)
     return _clean_sample_text(raw)
 
 
@@ -500,7 +499,7 @@ def spell_correct_text(text, progress_cb=None):
 # Streamlit part
 st.set_page_config(page_title="IGCSE Question Paper Generator", layout="wide")
 
-st.title("IGCSE Question Paper Generator")
+st.title("IGCSE Paper Generator")
 
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -510,7 +509,7 @@ with col1:
     max_questions = st.number_input("Max questions to keep", min_value=100, max_value=5000, value=1000)
     use_wordsegment = st.checkbox("Fix joined words (wordsegment)", value=True, disabled=not _WORDSEGMENT_AVAILABLE)
     use_textblob = st.checkbox("Spell-correct text (TextBlob)", value=False, disabled=not _TEXTBLOB_AVAILABLE)
-    range_input = st.text_input("Year range for papers (format YYYY-YYYY)", value="")
+    range_input = st.text_input("Year range for papers (e.g. 2018-2023)", value="")
 with col2:
     st.markdown("**Outputs**")
     st.markdown("- `extracted_igcse_papers.txt`")
@@ -531,11 +530,8 @@ if run_web or run_existing:
     st.info(f"Subject: {subject} ({code})")
 
     if run_web:
-        if range_input and not re.fullmatch(r"\d{4}\s*-\s*\d{4}", range_input):
-            st.error("Year range must be in the format YYYY-YYYY (e.g., 2018-2023).")
-            st.stop()
         with st.spinner("Fetching paper links..."):
-            links = fetch_past_papers(code, year_range=range_input.strip() if range_input else None)
+            links = fetch_past_papers(code)
         if not links:
             st.error("No papers found or failed to fetch. Check network access.")
             st.stop()
@@ -602,3 +598,115 @@ if run_web or run_existing:
                     data=f,
                     file_name="sample_paper.pdf",
                 )
+
+st.markdown("---")
+st.subheader("Student Practice Mode")
+
+def _format_question_for_display(question):
+    if is_multiple_choice(question):
+        text = re.sub(r"\s([ABCD])\s", r"\n\1 ", question)
+        text = re.sub(r"(\?)\s+(?=[ABCD]\s)", r"\1\n", text)
+        return text.strip()
+    return question.strip()
+
+
+def _parse_mcq(question):
+    text = _format_question_for_display(question)
+    lines = text.splitlines()
+    stem_lines = []
+    options = []
+    for line in lines:
+        m = re.match(r"^([ABCD])\s+(.*)$", line.strip())
+        if m:
+            options.append((m.group(1), m.group(2).strip()))
+        else:
+            stem_lines.append(line)
+    stem = "\n".join(stem_lines).strip()
+    return stem, options[:4]
+
+
+def _render_question_with_images(question_text):
+    parts = re.split(r"\[\[IMG:(.+?)\]\]", question_text)
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            if part.strip():
+                st.text(_format_question_for_display(part))
+        else:
+            img_path = part.strip()
+            if img_path and os.path.exists(img_path):
+                st.image(img_path, use_container_width=True)
+
+
+practice_col1, practice_col2 = st.columns([2, 1])
+with practice_col1:
+    practice_source = st.selectbox(
+        "Question source",
+        ["multiple_choice.json", "text_questions.json", "extracted_igcse_questions_1000.json"],
+    )
+    practice_count = st.number_input("Number of questions", min_value=1, max_value=100, value=10)
+    shuffle_questions = st.checkbox("Shuffle questions", value=True)
+with practice_col2:
+    st.markdown("**Session**")
+    start_practice = st.button("Start new practice session")
+
+if "practice_questions" not in st.session_state:
+    st.session_state.practice_questions = []
+if "practice_answers" not in st.session_state:
+    st.session_state.practice_answers = {}
+if "practice_index" not in st.session_state:
+    st.session_state.practice_index = 0
+
+if start_practice:
+    if not os.path.exists(practice_source):
+        st.error(f"{practice_source} not found in the working directory.")
+    else:
+        with open(practice_source, "r", encoding="utf-8") as f:
+            all_questions = json.load(f)
+        if shuffle_questions:
+            random.shuffle(all_questions)
+        st.session_state.practice_questions = all_questions[: int(practice_count)]
+        st.session_state.practice_answers = {}
+        st.session_state.practice_index = 0
+
+questions = st.session_state.practice_questions
+if questions:
+    idx = st.session_state.practice_index
+    total = len(questions)
+    st.markdown(f"**Question {idx + 1} of {total}**")
+    current_question = questions[idx]
+    if is_multiple_choice(current_question):
+        stem, options = _parse_mcq(current_question)
+        _render_question_with_images(stem)
+        option_labels = [f"{k} {v}" for k, v in options]
+        if option_labels:
+            selected_default = st.session_state.practice_answers.get(idx)
+            selected = st.radio(
+                "Choose an answer",
+                options=option_labels,
+                index=option_labels.index(selected_default) if selected_default in option_labels else 0,
+                key=f"mcq_{idx}",
+            )
+            st.session_state.practice_answers[idx] = selected
+    else:
+        _render_question_with_images(current_question)
+        answer_key = f"answer_{idx}"
+        default_answer = st.session_state.practice_answers.get(idx, "")
+        user_answer = st.text_area("Your answer", value=default_answer, height=150, key=answer_key)
+        st.session_state.practice_answers[idx] = user_answer
+
+    nav_col1, nav_col2, nav_col3 = st.columns(3)
+    if nav_col1.button("Previous", disabled=idx == 0):
+        st.session_state.practice_index = max(0, idx - 1)
+    if nav_col2.button("Next", disabled=idx >= total - 1):
+        st.session_state.practice_index = min(total - 1, idx + 1)
+    if nav_col3.button("Save answers to file"):
+        out = {
+            "source": practice_source,
+            "answers": [
+                {"question": questions[i], "answer": st.session_state.practice_answers.get(i, "")}
+                for i in range(total)
+            ],
+        }
+        with open("practice_answers.json", "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=True, indent=2)
+        st.success("Saved to practice_answers.json")
