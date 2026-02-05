@@ -1,6 +1,7 @@
 #I only used AI for:
 # The Gemini setup
 # The cleanup function for the sample paper generation
+#(I trust you guys not to steal my API key...)
 import os
 import json
 import re
