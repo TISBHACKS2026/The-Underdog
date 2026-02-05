@@ -1,3 +1,6 @@
+#I only used AI for:
+# The Gemini setup
+# The cleanup function for the sample paper generation
 import os
 import json
 import re
@@ -25,6 +28,14 @@ try:
     _TEXTBLOB_AVAILABLE = True
 except Exception:
     _TEXTBLOB_AVAILABLE = False
+
+try:
+    import google.generativeai as genai
+    _GENAI_AVAILABLE = True
+except Exception:
+    _GENAI_AVAILABLE = False
+
+GEMINI_API_KEY = "AIzaSyA8cg6EZ8hA-rYGPpfHswT3EQlWu9Z5TJQ"
 
 igcse_subject_codes = {
     "Accounting": "0452",
@@ -283,6 +294,8 @@ def is_multiple_choice(question_text):
     mcq_pattern = re.compile(r"(?m)^\s*A\s+.+\n^\s*B\s+.+\n^\s*C\s+.+\n^\s*D\s+.+", re.DOTALL)
     if mcq_pattern.search(question_text):
         return True
+    option_count = len(re.findall(r"(?m)^\s*[ABCD]\s+", question_text))
+    return option_count >= 4
 
 
 def _segment_joined_words(text, enabled=True):
@@ -495,6 +508,38 @@ def spell_correct_text(text, progress_cb=None):
     if progress_cb:
         progress_cb(1.0)
     return "\n".join(corrected)
+
+
+def gemini_feedback(question, answer, api_key, model="gemini-pro"):
+    if not _GENAI_AVAILABLE:
+        return "google-generativeai is not installed."
+    if not api_key:
+        return "GEMINI_API_KEY is not set."
+    prompt = (
+        "You are an IGCSE examiner. Provide concise feedback (strengths + improvements) "
+        "and, if appropriate, a short suggested answer outline.\n\n"
+        f"Question:\n{question}\n\nStudent answer:\n{answer}"
+    )
+    try:
+        genai.configure(api_key=api_key)
+        model_obj = genai.GenerativeModel(model_name=model)
+        response = model_obj.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Gemini API error: {e}"
+
+
+def gemini_list_models(api_key):
+    if not _GENAI_AVAILABLE:
+        return []
+    if not api_key:
+        return []
+    try:
+        genai.configure(api_key=api_key)
+        models = genai.list_models()
+        return [m.name for m in models if "generateContent" in getattr(m, "supported_generation_methods", [])]
+    except Exception:
+        return []
 
 # Streamlit part
 st.set_page_config(page_title="IGCSE Question Paper Generator", layout="wide")
@@ -710,3 +755,32 @@ if questions:
         with open("practice_answers.json", "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=True, indent=2)
         st.success("Saved to practice_answers.json")
+
+    st.markdown("---")
+    st.subheader("AI Feedback (Gemini)")
+    if not _GENAI_AVAILABLE:
+        st.info("Install google-generativeai to enable feedback.")
+    else:
+        key_input = st.text_input(
+            "Gemini API key",
+            type="password",
+            value="",
+            help="Optional; falls back to GEMINI_API_KEY env var",
+        )
+        model_name = st.text_input("Model name", value="gemini-1.5-flash")
+        api_key = key_input or GEMINI_API_KEY
+        if st.button("List available models"):
+            models = gemini_list_models(api_key)
+            if models:
+                st.write(models)
+            else:
+                st.warning("No models returned (check API key or permissions).")
+        if st.button("Get feedback for this answer"):
+            q_text = current_question
+            a_text = st.session_state.practice_answers.get(idx, "")
+            if not a_text:
+                st.warning("Please provide an answer first.")
+            else:
+                with st.spinner("Generating feedback..."):
+                    feedback = gemini_feedback(q_text, a_text, api_key=api_key, model=model_name)
+                st.write(feedback)
