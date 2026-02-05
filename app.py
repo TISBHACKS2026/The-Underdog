@@ -1,7 +1,25 @@
 #I only used AI for:
-# The Gemini setup
-# The cleanup function for the sample paper generation
-#(I trust you guys not to steal my API key...)
+
+#Some of the re patterns for cleaning text
+#The multiprocessing code for the pdfs
+
+"""
+This file contains the main logic for fetching, parsing, and processing IGCSE past papers, as well as the Streamlit UI. It also includes the text_to_pdf function from txtpdf.py for converting cleaned text into a PDF format.
+The main steps are:
+1. Fetch past paper links from the web based on the selected subject and year range.
+2. Download and parse the PDFs to extract text, including handling tables.
+3. Clean the extracted text to remove boilerplate and irrelevant content.
+4. Extract individual questions from the cleaned text.
+5. Classify questions as multiple-choice or text-based.
+6. Generate a structured JSON representation of a paper based on the subject's typical structure.
+7. Create a sample paper text file from the generated structure.
+
+Note: You need to set an environment variable with an API key for this to work - Gemini does not allow hardcoding.
+
+Signing off. 
+
+(Developed by Sidharth Banglani)
+"""
 import os
 import json
 import re
@@ -10,7 +28,7 @@ import signal
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from urllib.parse import urljoin
-
+from txtpdf import text_to_pdf
 import requests
 import pdfplumber
 import streamlit as st
@@ -36,7 +54,7 @@ try:
 except Exception:
     _GENAI_AVAILABLE = False
 
-GEMINI_API_KEY = "AIzaSyA8cg6EZ8hA-rYGPpfHswT3EQlWu9Z5TJQ"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 igcse_subject_codes = {
     "Accounting": "0452",
@@ -383,7 +401,9 @@ def generate_sample_paper(paper):
             seen.add(normalized)
             sample_lines.append(question + "\n\n")
     raw = "\n".join(sample_lines)
-    return _clean_sample_text(raw)
+    text = _clean_sample_text(raw)
+    text = gemini_fix_text(text, api_key=GEMINI_API_KEY, model="gemini-2.5-flash")
+    return text
 
 
 def save_outputs(all_extracted_text, questions, output_dir="."):
@@ -406,89 +426,6 @@ def save_outputs(all_extracted_text, questions, output_dir="."):
 def _pdf_escape(text):
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-
-def text_to_pdf(text, output_path, page_width=595, page_height=842, margin=50, font_size=11, leading=14, progress_cb=None):
-    lines = text.splitlines()
-    pages = []
-    y = page_height - margin
-    content_lines = []
-
-    def flush_page():
-        if content_lines:
-            pages.append("\n".join(content_lines))
-
-    total = max(len(lines), 1)
-    for i, line in enumerate(lines, start=1):
-        if y < margin + leading:
-            flush_page()
-            content_lines = []
-            y = page_height - margin
-        escaped = _pdf_escape(line)
-        content_lines.append(f"1 0 0 1 {margin} {y} Tm ({escaped}) Tj")
-        y -= leading
-        if progress_cb and i % 200 == 0:
-            progress_cb(i / total)
-
-    flush_page()
-    if progress_cb:
-        progress_cb(1.0)
-
-    objects = []
-    offsets = []
-
-    def add_object(obj_str):
-        offsets.append(sum(len(o) for o in objects))
-        objects.append(obj_str)
-
-    # Font object
-    add_object("1 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
-
-    # Pages and content objects
-    page_ids = []
-    content_ids = []
-    for i, page_content in enumerate(pages, start=1):
-        content_stream = f"BT\n/F1 {font_size} Tf\n{page_content}\nET"
-        content_id = 1 + len(content_ids) + len(page_ids) + 1
-        content_ids.append(content_id)
-        add_object(f"{content_id} 0 obj\n<< /Length {len(content_stream)} >>\nstream\n{content_stream}\nendstream\nendobj\n")
-
-        page_id = content_id + 1
-        page_ids.append(page_id)
-        add_object(
-            f"{page_id} 0 obj\n"
-            f"<< /Type /Page /Parent {page_id + 1} 0 R "
-            f"/Resources << /Font << /F1 1 0 R >> >> "
-            f"/MediaBox [0 0 {page_width} {page_height}] "
-            f"/Contents {content_id} 0 R >>\n"
-            f"endobj\n"
-        )
-
-    # Pages root
-    pages_id = page_ids[-1] + 1 if page_ids else 2
-    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
-    add_object(f"{pages_id} 0 obj\n<< /Type /Pages /Count {len(page_ids)} /Kids [ {kids} ] >>\nendobj\n")
-
-    # Catalog
-    catalog_id = pages_id + 1
-    add_object(f"{catalog_id} 0 obj\n<< /Type /Catalog /Pages {pages_id} 0 R >>\nendobj\n")
-
-    # Build PDF
-    header = "%PDF-1.4\n"
-    body = "".join(objects)
-    xref_offset = len(header) + len(body)
-    xref_entries = ["0000000000 65535 f \n"]
-    for off in offsets:
-        xref_entries.append(f"{off + len(header):010d} 00000 n \n")
-    xref = "xref\n0 {0}\n{1}".format(len(xref_entries), "".join(xref_entries))
-    trailer = f"trailer\n<< /Size {len(xref_entries)} /Root {catalog_id} 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
-
-    with open(output_path, "wb") as f:
-        f.write(header.encode("utf-8"))
-        f.write(body.encode("utf-8"))
-        f.write(xref.encode("utf-8"))
-        f.write(trailer.encode("utf-8"))
-
-    return output_path
 
 
 def spell_correct_text(text, progress_cb=None):
@@ -529,6 +466,23 @@ def gemini_feedback(question, answer, api_key, model="gemini-pro"):
     except Exception as e:
         return f"Gemini API error: {e}"
 
+def gemini_fix_text(text, api_key, model="gemini-2.5-flash"):
+    if not _GENAI_AVAILABLE:
+        return text
+    if not api_key:
+        return text
+    prompt = (
+        "You are a helpful assistant for cleaning up OCR-extracted text from IGCSE papers. "
+        "Fix common OCR errors, tidy tables, remove irrelevant boilerplate, remove question numbers, and(if needed/if images/data required are missing) generate images/data that fit the context. Preserve question integrity. Do not write anything except the cleaned text.\n\n"
+        f"Original text:\n{text}\n\nCleaned text:"
+    )
+    try:
+        genai.configure(api_key=api_key)
+        model_obj = genai.GenerativeModel(model_name=model)
+        response = model_obj.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Gemini API error: {e}"
 
 def gemini_list_models(api_key):
     if not _GENAI_AVAILABLE:
@@ -608,7 +562,8 @@ if run_web or run_existing:
         paper = generate_paper_json(mcq_questions, text_questions, paper_structure)
         with open("generated_igcse_paper.json", "w", encoding="utf-8") as f:
             json.dump(paper, f, ensure_ascii=True, indent=2)
-        sample = generate_sample_paper(paper)
+        with st.spinner("Generating sample paper..."):
+            sample = generate_sample_paper(paper)
         with open("sample_paper.txt", "w", encoding="utf-8") as f:
             f.write(sample)
 
@@ -637,7 +592,8 @@ if run_web or run_existing:
             progress = st.progress(0)
             with open("sample_paper.txt", "r", encoding="utf-8") as f:
                 text = f.read()
-            pdf_path = text_to_pdf(text, "sample_paper.pdf", progress_cb=progress.progress)
+            with st.spinner("Generating PDF..."):
+                pdf_path = text_to_pdf(text, "sample_paper.pdf")
             with open(pdf_path, "rb") as f:
                 st.download_button(
                     label="Download sample_paper.pdf",
