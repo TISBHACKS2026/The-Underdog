@@ -1,8 +1,4 @@
-#I only used AI for:
-
-#Some of the re patterns for cleaning text
-#The multiprocessing code for the pdfs
-
+#MADE BY KITTEN-STRIKES-BACK.
 
 """
 TISB HACKATHON 2026 - IGCSE Question Paper Generator
