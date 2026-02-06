@@ -3,7 +3,10 @@
 #Some of the re patterns for cleaning text
 #The multiprocessing code for the pdfs
 
+
 """
+TISB HACKATHON 2026 - IGCSE Question Paper Generator
+
 This file contains the main logic for fetching, parsing, and processing IGCSE past papers, as well as the Streamlit UI. It also includes the text_to_pdf function from txtpdf.py for converting cleaned text into a PDF format.
 The main steps are:
 1. Fetch past paper links from the web based on the selected subject and year range.
@@ -14,12 +17,11 @@ The main steps are:
 6. Generate a structured JSON representation of a paper based on the subject's typical structure.
 7. Create a sample paper text file from the generated structure.
 
-Note: You need to set an environment variable with an API key for this to work - Gemini does not allow hardcoding.
 
-Signing off. 
-
-(Developed by Sidharth Banglani)
+(Developed by Sidharth Banglani - Grade 8, The International School Bangalore)
 """
+
+
 import os
 import json
 import re
@@ -55,7 +57,10 @@ except Exception:
     _GENAI_AVAILABLE = False
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-
+if _GENAI_AVAILABLE and GEMINI_API_KEY:
+    print("Gemini API key found. Gemini-based features enabled.")
+else:
+    print("Gemini API key not found. Gemini-based features will be disabled.")
 igcse_subject_codes = {
     "Accounting": "0452",
     "Mathematics": "0606",
@@ -86,7 +91,7 @@ igcse_subject_codes = {
 structure = {
     "Accounting": [("Section A", "multiple", 35), ("Section B", "text", 5)],
     "Mathematics": [("Paper 1", "text", 20), ("Paper 2", "text", 20)],
-    "Afrikaans": [("Reading and Writing", "text", 30), ("Listening", "text", 20)],
+    "Afrikaans": [("Reading and Writing", "text", 30)],
     "Agriculture": [("Section 1", "text", 35), ("Section 2", "text", 5)],
     "Art and Design": [("Practical", "text", 100)],
     "Bahasa Indonesia": [("Reading and Writing", "text", 4), ("Listening", "text", 2)],
@@ -234,11 +239,12 @@ def parse_pdfs(download_links, max_workers=None, timeout_seconds=120, max_pdfs=1
 
 
 def _clean_text_for_questions(text):
+    # Drop section divider lines like "--- Section A ---"
     cleaned = re.sub(r"(?m)^--- .*? ---\s*$", "", text)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     lines = []
     boilerplate_line_patterns = [
-        r"^Section\s+[AB]$",
+        r"^Section\s+[ABC]$",
         r"^Answer\s+Question\s+\d+$",
         r"^Answer\s+any\s+.*questions.*$",
         r"^Answer\s+all\s+parts\s+of\s+Question.*$",
@@ -262,6 +268,7 @@ def _clean_text_for_questions(text):
         r"^Soft\s+pencil.*$",
         r"^\[Turn\s+over.*$",
     ]
+    # Any boilerplate line (case-insensitive) should be filtered out
     boilerplate_line_re = re.compile("|".join(boilerplate_line_patterns), re.IGNORECASE)
     for line in cleaned.splitlines():
         stripped = line.strip()
@@ -278,12 +285,14 @@ def _clean_text_for_questions(text):
             continue
         lines.append(line)
     cleaned = "\n".join(lines)
+    # Collapse excessive blank lines
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 
 def extract_questions(text):
     cleaned = _clean_text_for_questions(text)
+    # Find question starts like "Question 1 ..." or "1 (a) ..." at line start
     pattern = re.compile(r"(?m)^(?:Question\s*)?\d{1,2}\s+(?=(?:\(|[A-Z]))")
     matches = list(pattern.finditer(cleaned))
     if not matches:
@@ -310,9 +319,11 @@ def extract_questions(text):
 
 
 def is_multiple_choice(question_text):
+    # Detect a 4-option MCQ block with A/B/C/D on separate lines
     mcq_pattern = re.compile(r"(?m)^\s*A\s+.+\n^\s*B\s+.+\n^\s*C\s+.+\n^\s*D\s+.+", re.DOTALL)
     if mcq_pattern.search(question_text):
         return True
+    # Count option lines like "A ..." to decide if this is MCQ
     option_count = len(re.findall(r"(?m)^\s*[ABCD]\s+", question_text))
     return option_count >= 4
 
@@ -331,6 +342,7 @@ def _segment_joined_words(text, enabled=True):
         if not stripped:
             fixed_lines.append(line)
             continue
+        # If a line is a single long run of letters, split it into words
         if " " not in line and re.search(r"[A-Za-z]{12,}", line):
             line = re.sub(r"[A-Za-z]{8,}", segment_run, line)
         else:
@@ -364,13 +376,14 @@ def _clean_sample_text(text):
             continue
         # Drop literal escape artifacts
         line = line.replace("\\n", "\n")
+        # Drop OCR escape artifacts like "\1" or "\123 \456"
         line = re.sub(r"\\+1\b", "", line)
         line = re.sub(r"\b\\1\b", "", line)
         line = re.sub(r"\\\d+\s+\\\d+", "", line)
         # Drop obvious CID artifact lines
         if re.fullmatch(r"\(cid:\d+\)+", stripped):
             continue
-        # Fix common OCR spacing issues
+        # Fix common OCR spacing issues around currency and alphanumerics
         line = re.sub(r"\$(\d)", r"$ \1", line)
         line = re.sub(r"([A-Za-z])\$(\d)", r"\1 $\2", line)
         line = re.sub(r"(\d)([A-Za-z])", r"\1 \2", line)
@@ -378,13 +391,16 @@ def _clean_sample_text(text):
         # Normalize table separators
         if "|" in line:
             # Drop large empty table grids
+            # Drop large empty table grids
             if re.fullmatch(r"(\s*\|\s*){6,}\s*", line):
                 continue
+            # Normalize table separators and spacing
             line = re.sub(r"\s*\|\s*", " | ", line)
             line = re.sub(r"\s{2,}", " ", line)
         cleaned_lines.append(line)
     # Collapse excessive blank lines
     text = "\n".join(cleaned_lines)
+    # Collapse excessive blank lines
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -395,6 +411,7 @@ def generate_sample_paper(paper):
     for section in paper:
         sample_lines.append(f"--- {section['section']} ---\n")
         for question in section["questions"]:
+            # Normalize whitespace to dedupe similar questions
             normalized = re.sub(r"\s+", " ", question).strip().lower()
             if normalized in seen:
                 continue
@@ -435,6 +452,7 @@ def spell_correct_text(text, progress_cb=None):
     total = max(len(lines), 1)
     corrected = []
     for i, line in enumerate(lines, start=1):
+        # Skip spell-correction on lines with no letters
         if re.search(r"[A-Za-z]", line):
             try:
                 line = str(TextBlob(line).correct())
@@ -474,6 +492,7 @@ def gemini_fix_text(text, api_key, model="gemini-2.5-flash"):
     prompt = (
         "You are a helpful assistant for cleaning up OCR-extracted text from IGCSE papers. "
         "Fix common OCR errors, tidy tables, remove irrelevant boilerplate, remove question numbers, and(if needed/if images/data required are missing) generate images/data that fit the context. Preserve question integrity. Do not write anything except the cleaned text.\n\n"
+        "If there is a missing image/diagram, explain what the image/diagram should contain in the text. Example: for a question on Hooke's law you can say: '(The graph(x:spring length, y:force) shows a line that slants upwards.)'\n\n"
         f"Original text:\n{text}\n\nCleaned text:"
     )
     try:
@@ -497,10 +516,10 @@ def gemini_list_models(api_key):
         return []
 
 # Streamlit part
-st.set_page_config(page_title="IGCSE Question Paper Generator", layout="wide")
+st.set_page_config(page_title="PaperHarvester", layout="wide")
 
-st.title("IGCSE Paper Generator")
-
+st.title(" 📝 PaperHarvester - IGCSE Question Paper Generator")
+st.markdown("*A tool to generate IGCSE question papers from past papers.*")
 col1, col2 = st.columns([2, 1])
 with col1:
     subject = st.selectbox("Subject", list(igcse_subject_codes.keys()))
@@ -606,6 +625,7 @@ st.subheader("Student Practice Mode")
 
 def _format_question_for_display(question):
     if is_multiple_choice(question):
+        # Format options onto separate lines for display
         text = re.sub(r"\s([ABCD])\s", r"\n\1 ", question)
         text = re.sub(r"(\?)\s+(?=[ABCD]\s)", r"\1\n", text)
         return text.strip()
@@ -618,6 +638,7 @@ def _parse_mcq(question):
     stem_lines = []
     options = []
     for line in lines:
+        # Parse option lines like "A option text"
         m = re.match(r"^([ABCD])\s+(.*)$", line.strip())
         if m:
             options.append((m.group(1), m.group(2).strip()))
@@ -675,7 +696,7 @@ if questions:
     idx = st.session_state.practice_index
     total = len(questions)
     st.markdown(f"**Question {idx + 1} of {total}**")
-    current_question = questions[idx]
+    current_question = gemini_fix_text(questions[idx], api_key=GEMINI_API_KEY, model="gemini-2.5-flash")
     if is_multiple_choice(current_question):
         stem, options = _parse_mcq(current_question)
         _render_question_with_images(stem)
@@ -733,7 +754,7 @@ if questions:
             else:
                 st.warning("No models returned (check API key or permissions).")
         if st.button("Get feedback for this answer"):
-            q_text = current_question
+            q_text = gemini_fix_text(current_question, api_key=api_key)
             a_text = st.session_state.practice_answers.get(idx, "")
             if not a_text:
                 st.warning("Please provide an answer first.")
@@ -741,3 +762,5 @@ if questions:
                 with st.spinner("Generating feedback..."):
                     feedback = gemini_feedback(q_text, a_text, api_key=api_key, model=model_name)
                 st.write(feedback)
+#THE END.
+#Just like Gemini, please consider providing feedback on how I can improve this project! 
